@@ -46,8 +46,9 @@ torch 2.7.1 -->通过CUDA指挥-->驱动580.65.06-->指挥4090 24GB工作
 
 RoboTwin是由RoboTwin团队搭建的基于RoboTwin任务测评环境（先下载好这个测评环境，再补充策略侧和环境侧），其中包含仿真器+50个任务，任务代码在envs/,资产解压到 assets/、策略侧权重放在 XPolicyLab/policy/Hy_Embodied_05_VLA/ 下、结果自动落到 eval_result/
 ```bash
-git clone https://github.com/RoboTwin-Platform/RoboTwin.git 
 # 策略侧XPolicyLab 以 submodule 形式位于 RoboTwin/XPolicyLab（policy中包含50多个不同策略模型的适配器）
+git clone https://github.com/RoboTwin-Platform/RoboTwin.git
+
 # 验收
 ls XPolicyLab/policy/Hy_Embodied_05_VLA/eval.sh     # 能列出来 = submodule 到位
 git submodule status XPolicyLab                     # 能打印出 commit hash，本笔记验证时 commit: ea8b211
@@ -56,21 +57,23 @@ git submodule status XPolicyLab                     # 能打印出 commit hash�
 **② 策略侧 venv（uv）**
 
 
-# 策略端部署 → 配置uv环境 → 安装uv工具
+### 策略端部署 → 配置uv环境 → 安装uv工具
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env 
 uv --version
 ```
-#  策略端部署 → 克隆XPolicyLab仓库 / 安装Hy-Embodied（安装模型所需要的python库 如torch 2.7.1+cu128，安装模型本体代码）
+### 策略端部署 → 克隆XPolicyLab仓库 / 安装Hy-Embodied（安装模型所需要的python库 如torch 2.7.1+cu128，安装模型本体代码）
 ```bash
 cd /workspace/RoboTwin/XPolicyLab/policy/Hy_Embodied_05_VLA
 bash install.sh
-国内直连 `download.pytorch.org` 会失败。正确做法：**`pyproject.toml` 保持原样**（保 content-hash），只 `sed` 替换 `uv.lock` 里的 wheel URL 到国内镜像，然后：
 ```
+### 策略端部署 → 下载预训练权重
 ```bash
-export UV_FROZEN=1    # 禁止 uv 重算依赖
-# 运行策略侧 install 脚本
+# 下载预训练权重
+export HF_ENDPOINT=https://hf-mirror.com
+cd /workspace/RoboTwin/XPolicyLab/policy/Hy_Embodied_05_VLA
+hf download tencent/Hy-Embodied-0.5-VLA-RoboTwin --local-dir ./Hy-VLA-RoboTwin-ckpt
 ```
 
 验收信号：
@@ -81,58 +84,74 @@ print('env ok | torch', torch.__version__, '| cuda', torch.cuda.is_available())"
 # → env ok | torch 2.7.1+cu128 | cuda True
 ```
 
-> [!WARNING]
-> 不要改 `pyproject.toml` 的 `[[tool.uv.index]]`——lock 的 content-hash 会失效，触发 universal
-> resolution，而国内镜像只有 Linux wheel，macOS 分支求解直接报 "No solution found"。
-
-**③ 下载权重（8.5G，单文件 safetensors）**
-
-该仓库未启用 Xet，`HF_ENDPOINT=https://hf-mirror.com` 可直下（见[坑 B](#坑-b-hf-大文件下载-hf-mirror-对大文件只做-302-转发)）。
-
 **④ 环境侧 conda + 源码编译**
 
-```bash
-conda create -n RoboTwin python=3.10 -y && conda activate RoboTwin
-cd /workspace/RoboTwin
-export TORCH_CUDA_ARCH_LIST=8.9    # 4090 只需 sm_89，编译量降到 ~1/7
-bash scripts/_install.sh           # pytorch3d / curobo 源码编译，约 30~60 分钟，需代理
-```
+### 1.安装vulkan（是SAPIEN 渲染的依赖,SAPIEN 是仿真引擎，负责“渲染画面 + 跑物理”。）
 
-**⑤ 下载评测资产（三个 zip，约 13.9 GiB）**
+这一步遇到问题：EGL/GLVND 是一组用户态的“转接库”——无屏幕环境下，Vulkan 要经 EGL 才能触达 GPU。
 
-官方 `_download_assets.sh` 有"解压失败也删包"的缺陷，建议手动下载（见[坑 B](#坑-b-hf-大文件下载-hf-mirror-对大文件只做-302-转发)、[坑 C](#坑-c-_download_assetssh-解压失败也删包)）：
+SAPIEN → Vulkan → NVIDIA 驱动 → 【EGL/GLVND 这套"过桥的库"】 → GPU
+                                      ↑
+                            容器精简镜像里压根没装这套
 
-```bash
-# 官方 sha256（从 HF API paths-info 接口取得，见坑 B）
-embodiments.zip        219,847,741    85ffeff5…
-objects.zip          3,737,778,549    6aa56b3c…
-background_texture.zip 10,970,687,027 54ede0fb…
+libegl1 = 一个 Ubuntu 软件包，里面装的是 EGL 的运行库文件。
 
-aria2c -x8 -s8 -k4M -c --checksum=sha-256=<官方sha> -o <文件> "<签名直链>"
-sha256sum <文件>     # 必须与官方一致才算下载成功
-unzip -q -o <文件> && rm -f <文件>    # 用 && 绑住删除
-python ./scripts/update_embodiment_config_path.py
-```
-
-**⑥ Vulkan/EGL 修复（headless 容器必做）**
-
-精简容器镜像缺 GL/EGL 用户态整包，SAPIEN/Vulkan 只认到 llvmpipe（CPU 软渲染）。一行修好：
 
 ```bash
-apt-get update -qq && apt-get install -y libegl1
-```
-
-验收信号：
-
-```bash
+sudo apt update
+sudo apt install -y libvulkan1 mesa-vulkan-drivers vulkan-tools
+vulkaninfo | head -20
+# 验证
 vulkaninfo --summary | grep deviceName
-# → deviceName = NVIDIA GeForce RTX 4090   （而不是 llvmpipe）
-python scripts/test_render.py   # → 绿字 Render Well
+# 画图线不通
+deviceName = llvmpipe（CPU）
+#查询问题
+ls /usr/lib/x86_64-linux-gnu/libEGL.so.1 2>/dev/null && echo "EGL 在，问题在别处" || echo "EGL 缺 → apt-get install -y libegl1"
+#如果egl缺，下载
+apt-get install -y libegl1
+# 验证
+vulkaninfo --summary | grep deviceName
+#正确结果
+deviceName = NVIDIA GeForce RTX 4090
 ```
 
-> [!NOTE]
-> `apt install` 只活在当前容器，**重建实例后需重装**。SAPIEN 的 `_vulkan_tricks.py`
-> 只认 `/usr/share/vulkan/icd.d/nvidia_icd.json`，不看 `/etc/vulkan/icd.d/`（详见[坑 D](#坑-d-vulkan-只认到-llvmpipe4090-未被识别)）。
+
+### 创建并激活 conda 环境
+```bash
+conda create -n RoboTwin python=3.10 -y
+conda activate RoboTwin
+```
+### 安装基础环境
+```bash
+# 安装仿真器和评测脚本使用的库 安装sapien ，mplib 机器臂轨迹规划使用，open3d 3D几何处理 处理物体模型和空间变换
+bash scripts/_install.sh
+```
+### 下载仿真资产（机器人、纹理等）。资产在 HuggingFace 上
+
+```bash
+# 机器人（0.2G），物体（10070个物体模型 3.48G），纹理（背景纹理10G），此步通过脚本下载容易失败，可以手动"下载“ → sha256 校验 →
+# sha值 objects.zip            6aa56b3cf1e1064f7c809308144da36b00815f8b137fef2d7e4de856f8becf27
+# embodiments.zip        85ffeff55a5066def5931224a85cfa3f8abaa1fbf779bd17789a7fb3f85bc789
+# background_texture.zip 54ede0fb5b783e0faa2bc98720d3affd6ca3bb9280b225b48c1aafaf31473070
+
+bash scripts/_download_assets.sh
+
+#素材下载限流时：
+export HF_ENDPOINT=https://hf-mirror.com
+huggingface-cli login               # 官方建议：遇到限流先登录
+bash scripts/_download_assets.sh
+```
+
+
+# 验收
+cd /workspace/RoboTwin
+conda activate RoboTwin
+python -c "import sapien, mplib, curobo, torch; print('env ok', torch.__version__)"
+python scripts/test_render.py
+ffmpeg -version
+#  test_render.py 能出画面 → Vulkan + SAPIEN 这一串通了，这是评测能跑的前提
+#  ffmpeg -version 有输出 → 官方要求确认项。ffmpeg用来处理视频数据
+
 
 ### 2.2 冒烟测试（debug，不起仿真）
 
@@ -173,9 +192,6 @@ export ROBOTWIN_EVAL_ARGS_FILE=~/rt_args.txt
 
 bash eval.sh RoboTwin stack_bowls_two Hy-VLA-RoboTwin-ckpt arx_x5 ee 0 0 0 uv RoboTwin 2>&1 | tee ~/sim_eval.log
 ```
-
-前提：`deploy.yml` 已按第 3 节坑 I 对齐官方口径（**先对齐再跑，否则白烧几小时**）。
-
 ---
 
 ## 3. 坑与解法
