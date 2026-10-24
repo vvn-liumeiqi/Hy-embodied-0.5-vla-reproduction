@@ -4,22 +4,17 @@
 > 评测走的是 [XPolicyLab](https://github.com/XPolicyLab/XPolicyLab) 链路（RoboTwin 的 submodule），
 > 权重为 HF 上的 `tencent/Hy-Embodied-0.5-VLA-RoboTwin`。
 >
-> 本文重点不在"怎么跑"（官方 README 已写），而在**官方文档没写的差异和坑**。
+> 本文重点在于成功流程和踩的坑
 
 ---
 
 ## TL;DR
 
-- ✅ **复现成功**：`stack_bowls_two`（demo_clean，unseen 指令）**6/6 = 100%**
-- 环境：英博云容器，**单张 RTX 4090 24GB**，Ubuntu 22.04
+- ✅ **复现成功**：`stack_bowls_two`（demo_clean，unseen 指令）**6/6 = 100%**（机器臂将两个碗叠起来）
+- 环境：英博云容器，**单张 RTX 4090 24GB**，Ubuntu 22.04，系统盘30GB，共享存储卷128GB（复现结束后使用了40GB）
 - 全程约 3 个工作日（2026-10-05 ~ 10-07）
 - 最耗时的一关：RoboTwin 依赖源码编译（pytorch3d / curobo，约 1 小时）
 - 最坑的一关：**XPolicyLab 自带的 `deploy.yml` 是 RoboDojo 模板**，跑 RoboTwin 权重必须逐项对齐官方 `robotwin_eval/deploy_policy.yml`——不对齐时模型"看着在动但永远不成功"，跑出 0/23
-
-> [!IMPORTANT]
-> 一句话教训：**`deploy.yml` 的预处理/解码口径必须和权重的训练口径一致**。
-> 权重指对了不等于配置对了——我们正是栽在这上面（详见[坑 I](#坑-i-最大的坑deployyml-是-robodojo-模板)）。
-
 ---
 
 ## 1. 环境与版本
@@ -27,33 +22,52 @@
 | 项 | 值 |
 |---|---|
 | GPU | RTX 4090 24GB × 1（单卡，policy 与 env 共用 `device_id 0`） |
-| 驱动 | 580.65.06 |
+| 驱动 | 580.65.06 ,CUDA Version: 13.0 |
 | 系统 | Ubuntu 22.04（容器，headless，无桌面） |
 | 磁盘 | `/workspace` 128G（共享存储卷） |
-| 策略侧 Python | uv venv，torch **2.7.1+cu128**，uv 0.12.23 |
+| 策略侧 Python | uv venv(策略侧在uv虚拟环境中运行)，torch **2.7.1+cu128**，uv 0.12.23 |
 | 环境侧 Python | conda env `RoboTwin`（python 3.10），sapien 3.0.0b1 等（按官方 requirements 钉版本） |
 | 权重 | `Hy-VLA-RoboTwin-ckpt`，单文件 `model.safetensors` 8.5G（非分片）+ `norm_stats.pkl` |
 | 评测资产 | `embodiments.zip` + `objects.zip` + `background_texture.zip`，合计约 13.9 GiB |
 
 ---
+CUDA版本13.0，指的是的驱动上限是13.0
 
+torch下载版本为，cu128指的是该torch是针对CUDA12.8编译的版本（小于驱动上限13.0，符合要求）
+
+torch 2.7.1 -->通过CUDA指挥-->驱动580.65.06-->指挥4090 24GB工作
 ## 2. 成功流程
 
 ### 2.1 环境搭建（六步）
 
-以下按实际走通的顺序，每步附**验收信号**——没有验收信号不算完成。
+以下按实际走通的顺序，每步附**验收信号**
 
 **① 克隆代码**（RoboTwin 含 XPolicyLab submodule）
 
+RoboTwin是由RoboTwin团队搭建的基于RoboTwin任务测评环境（先下载好这个测评环境，再补充策略侧和环境侧），其中包含仿真器+50个任务，任务代码在envs/,资产解压到 assets/、策略侧权重放在 XPolicyLab/policy/Hy_Embodied_05_VLA/ 下、结果自动落到 eval_result/
 ```bash
-git clone https://github.com/RoboTwin-Platform/RoboTwin.git   # [待补：实际 commit hash]
-# XPolicyLab 以 submodule 形式位于 RoboTwin/XPolicyLab
+git clone https://github.com/RoboTwin-Platform/RoboTwin.git 
+# 策略侧XPolicyLab 以 submodule 形式位于 RoboTwin/XPolicyLab（policy中包含50多个不同策略模型的适配器）
+# 验收
+ls XPolicyLab/policy/Hy_Embodied_05_VLA/eval.sh     # 能列出来 = submodule 到位
+git submodule status XPolicyLab                     # 能打印出 commit hash，本笔记验证时 commit: ea8b211
 ```
 
 **② 策略侧 venv（uv）**
 
-国内直连 `download.pytorch.org` 会失败。正确做法：**`pyproject.toml` 保持原样**（保 content-hash），只 `sed` 替换 `uv.lock` 里的 wheel URL 到国内镜像，然后：
 
+# 策略端部署 → 配置uv环境 → 安装uv工具
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env 
+uv --version
+```
+#  策略端部署 → 克隆XPolicyLab仓库 / 安装Hy-Embodied（安装模型所需要的python库 如torch 2.7.1+cu128，安装模型本体代码）
+```bash
+cd /workspace/RoboTwin/XPolicyLab/policy/Hy_Embodied_05_VLA
+bash install.sh
+国内直连 `download.pytorch.org` 会失败。正确做法：**`pyproject.toml` 保持原样**（保 content-hash），只 `sed` 替换 `uv.lock` 里的 wheel URL 到国内镜像，然后：
+```
 ```bash
 export UV_FROZEN=1    # 禁止 uv 重算依赖
 # 运行策略侧 install 脚本
