@@ -118,6 +118,7 @@ deviceName = NVIDIA GeForce RTX 4090
 
 ### 创建并激活 conda 环境
 ```bash
+# conda是 包和环境管理器，与uv最大区别是 可以管（Python 包 + 非 Python 的软件（ffmpeg、CUDA 工具链、C 库））
 conda create -n RoboTwin python=3.10 -y
 conda activate RoboTwin
 ```
@@ -126,7 +127,7 @@ conda activate RoboTwin
 # 安装仿真器和评测脚本使用的库 安装sapien ，mplib 机器臂轨迹规划使用，open3d 3D几何处理 处理物体模型和空间变换
 bash scripts/_install.sh
 ```
-### 下载仿真资产（机器人、纹理等）。资产在 HuggingFace 上
+### 下载仿真资产（机器人、纹理等），资产在 HuggingFace 上
 
 ```bash
 # 机器人（0.2G），物体（10070个物体模型 3.48G），纹理（背景纹理10G），此步通过脚本下载容易失败，可以手动"下载“ → sha256 校验 →
@@ -143,21 +144,33 @@ bash scripts/_download_assets.sh
 ```
 
 
-# 验收
+### 验收
+```bash
+
+###  test_render.py 能出画面 → Vulkan + SAPIEN 这一串通了，这是评测能跑的前提
+###  ffmpeg -version 有输出 → 官方要求确认项。ffmpeg用来处理视频数据
+
 cd /workspace/RoboTwin
+
 conda activate RoboTwin
+
 python -c "import sapien, mplib, curobo, torch; print('env ok', torch.__version__)"
+
 python scripts/test_render.py
+
 ffmpeg -version
-#  test_render.py 能出画面 → Vulkan + SAPIEN 这一串通了，这是评测能跑的前提
-#  ffmpeg -version 有输出 → 官方要求确认项。ffmpeg用来处理视频数据
+```
+
 
 
 ### 2.2 冒烟测试（debug，不起仿真）
 
 ```bash
+#用最小代价快速验证“系统能不能基本跑起来”的初检
 cd /workspace/RoboTwin/XPolicyLab/policy/Hy_Embodied_05_VLA
+
 export HY_VLA_CKPT_PATH=/workspace/RoboTwin/XPolicyLab/policy/Hy_Embodied_05_VLA/Hy-Embodied-0.5-VLA/Hy-VLA-RoboTwin-ckpt
+
 EVAL_ENV_TYPE=debug bash eval.sh RoboTwin stack_bowls_two Hy-VLA-RoboTwin-ckpt arx_x5 ee 0 0 0 uv RoboTwin
 ```
 
