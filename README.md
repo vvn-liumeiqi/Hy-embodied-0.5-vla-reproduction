@@ -4,7 +4,7 @@
 > 评测走的是 [XPolicyLab](https://github.com/XPolicyLab/XPolicyLab) 链路（RoboTwin 的 submodule），
 > 权重为 HF 上的 `tencent/Hy-Embodied-0.5-VLA-RoboTwin`。
 >
-> 本文重点在于成功流程和踩的坑
+> 本文重点在于成功流程和遇到的问题
 
 ---
 
@@ -13,8 +13,8 @@
 - ✅ **复现成功**：`stack_bowls_two`（demo_clean，unseen 指令）**6/6 = 100%**（机器臂将两个碗叠起来）
 - 环境：英博云容器，**单张 RTX 4090 24GB**，Ubuntu 22.04，系统盘30GB，共享存储卷128GB（复现结束后使用了40GB）
 - 全程约 3 个工作日（2026-10-05 ~ 10-07）
-- 最耗时的一关：RoboTwin 依赖源码编译（pytorch3d / curobo，约 1 小时）
-- 最坑的一关：**XPolicyLab 自带的 `deploy.yml` 是 RoboDojo 模板**，跑 RoboTwin 权重必须逐项对齐官方 `robotwin_eval/deploy_policy.yml`——不对齐时模型"看着在动但永远不成功"，跑出 0/23
+- ⚠️注意1：RoboTwin 依赖源码编译（pytorch3d / curobo，约 1 小时）
+- ⚠️注意2：**XPolicyLab 自带的 `deploy.yml` 是 RoboDojo 模板**，跑 RoboTwin 权重必须逐项对齐官方 `robotwin_eval/deploy_policy.yml`——不对齐时模型"看着在动但永远不成功"，跑出 0/23
 ---
 
 ## 1. 环境与版本
@@ -33,7 +33,7 @@
 ---
 CUDA版本13.0，指的是的驱动上限是13.0
 
-torch下载版本为，cu128指的是该torch是针对CUDA12.8编译的版本（小于驱动上限13.0，符合要求）
+torch下载版本为2.7.1，cu128指的是该torch是针对CUDA12.8编译的版本（小于驱动上限13.0，符合要求）
 
 torch 2.7.1 -->通过CUDA指挥-->驱动580.65.06-->指挥4090 24GB工作
 ## 2. 成功流程
@@ -74,11 +74,9 @@ bash install.sh
 export HF_ENDPOINT=https://hf-mirror.com
 cd /workspace/RoboTwin/XPolicyLab/policy/Hy_Embodied_05_VLA
 hf download tencent/Hy-Embodied-0.5-VLA-RoboTwin --local-dir ./Hy-VLA-RoboTwin-ckpt
-```
 
-验收信号：
+#验收信号：
 
-```bash
 "$HYROOT/.venv/bin/python" -c "import torch, hy_vla, robotwin_eval, XPolicyLab; \
 print('env ok | torch', torch.__version__, '| cuda', torch.cuda.is_available())"
 # → env ok | torch 2.7.1+cu128 | cuda True
@@ -86,52 +84,44 @@ print('env ok | torch', torch.__version__, '| cuda', torch.cuda.is_available())"
 
 **④ 环境侧 conda + 源码编译**
 
-### 1.安装vulkan（是SAPIEN 渲染的依赖,SAPIEN 是仿真引擎，负责“渲染画面 + 跑物理”。）
-
-这一步遇到问题：EGL/GLVND 是一组用户态的“转接库”——无屏幕环境下，Vulkan 要经 EGL 才能触达 GPU。
+### 1.安装vulkan（SAPIEN 是仿真引擎，负责“渲染画面+跑物理”,vulkan是SAPIEN 渲染的依赖）
 
 SAPIEN → Vulkan → NVIDIA 驱动 → 【EGL/GLVND 这套"过桥的库"】 → GPU
-                                      ↑
-                            容器精简镜像里压根没装这套
 
-libegl1 = 一个 Ubuntu 软件包，里面装的是 EGL 的运行库文件。
-
-
+这一步遇到问题：缺少EGL（EGL/GLVND是一组用户态的“转接库”——无屏幕环境下，Vulkan 要经 EGL 才能触达 GPU）
+                                    
 ```bash
 sudo apt update
 sudo apt install -y libvulkan1 mesa-vulkan-drivers vulkan-tools
 vulkaninfo | head -20
 # 验证
 vulkaninfo --summary | grep deviceName
-# 画图线不通
-deviceName = llvmpipe（CPU）
+deviceName = llvmpipe（CPU） # 画图线不通
 #查询问题
 ls /usr/lib/x86_64-linux-gnu/libEGL.so.1 2>/dev/null && echo "EGL 在，问题在别处" || echo "EGL 缺 → apt-get install -y libegl1"
 #如果egl缺，下载
-apt-get install -y libegl1
+apt-get install -y libegl1   # libegl1 是一个Ubuntu软件包，里面装的是 EGL 的运行库文件。
 # 验证
 vulkaninfo --summary | grep deviceName
-#正确结果
-deviceName = NVIDIA GeForce RTX 4090
+deviceName = NVIDIA GeForce RTX 4090   #正确结果
 ```
-
 
 ### 创建并激活 conda 环境
 ```bash
-# conda是 包和环境管理器，与uv最大区别是 可以管（Python 包 + 非 Python 的软件（ffmpeg、CUDA 工具链、C 库））
+# conda是 包和环境管理器，与uv最大区别是可以管（Python包 + 非Python的软件（ffmpeg、CUDA 工具链、C 库））
 conda create -n RoboTwin python=3.10 -y
 conda activate RoboTwin
 ```
-### 安装基础环境
+### 安装仿真的依赖
 ```bash
-# 安装仿真器和评测脚本使用的库 安装sapien ，mplib 机器臂轨迹规划使用，open3d 3D几何处理 处理物体模型和空间变换
+# 安装仿真器和评测脚本使用的库 安装sapien ，mplib 机器臂轨迹规划使用，open3d 3D几何处理 处理物体模型和空间变换等
 bash scripts/_install.sh
 ```
-### 下载仿真资产（机器人、纹理等），资产在 HuggingFace 上
+### 下载仿真资产（构成场景的原始素材，机器人、纹理等），在 HuggingFace 上
 
 ```bash
 # 机器人（0.2G），物体（10070个物体模型 3.48G），纹理（背景纹理10G），此步通过脚本下载容易失败，可以手动"下载“ → sha256 校验 →
-# sha值 objects.zip            6aa56b3cf1e1064f7c809308144da36b00815f8b137fef2d7e4de856f8becf27
+# objects.zip            6aa56b3cf1e1064f7c809308144da36b00815f8b137fef2d7e4de856f8becf27
 # embodiments.zip        85ffeff55a5066def5931224a85cfa3f8abaa1fbf779bd17789a7fb3f85bc789
 # background_texture.zip 54ede0fb5b783e0faa2bc98720d3affd6ca3bb9280b225b48c1aafaf31473070
 
@@ -141,42 +131,26 @@ bash scripts/_download_assets.sh
 export HF_ENDPOINT=https://hf-mirror.com
 huggingface-cli login               # 官方建议：遇到限流先登录
 bash scripts/_download_assets.sh
-```
 
-
-### 验收
-```bash
-
+# 验收
 ###  test_render.py 能出画面 → Vulkan + SAPIEN 这一串通了，这是评测能跑的前提
-###  ffmpeg -version 有输出 → 官方要求确认项。ffmpeg用来处理视频数据
-
+###  ffmpeg -version 有输出 → 官方要求确认项。ffmpeg用来处理视频数据，后续可以保留测评时的视频
 cd /workspace/RoboTwin
-
 conda activate RoboTwin
-
 python -c "import sapien, mplib, curobo, torch; print('env ok', torch.__version__)"
-
 python scripts/test_render.py
-
 ffmpeg -version
 ```
-
-
-
 ### 2.2 冒烟测试（debug，不起仿真）
 
 ```bash
 #用最小代价快速验证“系统能不能基本跑起来”的初检
 cd /workspace/RoboTwin/XPolicyLab/policy/Hy_Embodied_05_VLA
-
 export HY_VLA_CKPT_PATH=/workspace/RoboTwin/XPolicyLab/policy/Hy_Embodied_05_VLA/Hy-Embodied-0.5-VLA/Hy-VLA-RoboTwin-ckpt
-
 EVAL_ENV_TYPE=debug bash eval.sh RoboTwin stack_bowls_two Hy-VLA-RoboTwin-ckpt arx_x5 ee 0 0 0 uv RoboTwin
-```
 
-验收信号：
+#验收信号：
 
-```
 [SERVER] ckpt override: ckpt_path=.../Hy-VLA-RoboTwin-ckpt
 [hy_vla] decode mode: with_absolute=True, chunk=20
 [hy_vla] model ready (...)
@@ -190,9 +164,11 @@ EVAL_ENV_TYPE=debug bash eval.sh RoboTwin stack_bowls_two Hy-VLA-RoboTwin-ckpt a
 > **debug 只验证"策略服务能起来 + 动作格式对得上"**。`debug_env_client.py` 是纯桩环境：
 > 不建 SAPIEN、不加载资产、不跑物理，观测全是零向量。debug 的分数**没有任何意义**。
 
-### 2.3 真跑 sim
+### 2.3 真跑sim
 
-去掉 `EVAL_ENV_TYPE=debug` 前缀即可（变量为空默认 sim）。集数与指令类型通过 `ROBOTWIN_EVAL_ARGS_FILE` 追加（**每行一个 token**，见[坑 J](#坑-j-robotwin_eval_args_file-的-mapfile-写法)）：
+去掉 `EVAL_ENV_TYPE=debug` 前缀即可（变量为空默认sim）。
+集数与指令类型通过 `ROBOTWIN_EVAL_ARGS_FILE` 追加
+（**每行一个 token**，见[坑 J](#坑-j-robotwin_eval_args_file-的-mapfile-写法)）：
 
 ```bash
 cat > ~/rt_args.txt <<'EOF'
