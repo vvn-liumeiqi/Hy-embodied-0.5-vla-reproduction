@@ -171,6 +171,7 @@ EVAL_ENV_TYPE=debug bash eval.sh RoboTwin stack_bowls_two Hy-VLA-RoboTwin-ckpt a
 （**每行一个 token**，见[坑 J](#坑-j-robotwin_eval_args_file-的-mapfile-写法)）：
 
 ```bash
+# unseen 是官方测评跑的参数，指的是评测的时候给模型的指令是训练时没见过的指令。
 cat > ~/rt_args.txt <<'EOF'
 --test_num
 10
@@ -183,31 +184,31 @@ bash eval.sh RoboTwin stack_bowls_two Hy-VLA-RoboTwin-ckpt arx_x5 ee 0 0 0 uv Ro
 ```
 ---
 
-## 3. 坑与解法
+## 3. 遇到的问题及解决方法
 
 ### 3.1 环境搭建阶段
 
-#### 坑 A：uv 装 torch 走不通（官方 index 被墙）
+#### 问题A：uv 装 torch 走不通（官方 index 被墙）
 
 - **症状**：`tunnel error`（`download.pytorch.org` 不在平台代理白名单）
 - **根因**：uv.lock 的 content-hash 绑定 pyproject；改 index 会触发全量重算
-- **解法**：pyproject 不动，sed 改 uv.lock 的 wheel URL + `UV_FROZEN=1`（见 2.1-②）
+- **解法**：pyproject 不动，sed 改 uv.lock 的 wheel URL + `UV_FROZEN=1`
 
-#### 坑 B：HF 大文件下载——hf-mirror 对大文件只做 302 转发
+#### 问题B：HF 大文件下载——hf-mirror 对大文件只做 302 转发
 
 - **症状**：下载 `background_texture.zip`（10.2G）卡在 `cas-bridge.xethub.hf.co`，`Read timed out`；`HF_HUB_DISABLE_XET=1` 无效
 - **根因**：`HF_ENDPOINT` 只管 Hub API；实际字节被服务端 302 到 Xet CAS 桥（国外），镜像站不代理数据。实测确认 cas-bridge 支持 Range（HTTP 206），但不稳
 - **解法**：`curl -sI` 取 302 的带签名直链（3600s 有效）→ `aria2c -x8 -s8 -c --checksum=sha-256=<官方sha>`；官方 sha256 从 `POST /api/datasets/TianxingChen/RoboTwin2.0/paths-info/main` 取
 - **验收**：`sha256sum` 与官方 lfs.oid **逐字符一致**才算成功——unzip 能打开只说明结构对齐，不证明内容无损（我们实测过"尺寸正好、zip 可解析"但 sha 不符的坏包）
 
-#### 坑 C：`_download_assets.sh` 解压失败也删包
+#### 问题C：`_download_assets.sh` 解压失败也删包
 
 - **症状**：脚本回显 `Processing complete!`，但 `assets/` 下只剩 `embodiments/`，两个大包连同 zip 一起消失
 - **根因**：脚本写法是 `unzip X.zip` 换行 `rm -rf X.zip`——无条件删除；unzip 失败时证据和重试机会一起没了；而 `update_embodiment_config_path.py` 只依赖 embodiments，所以照样打印成功
 - **解法**：不用该脚本，手动"下载 → sha256 校验 → `unzip -q -o X.zip && rm -f X.zip`"
 - **教训**：**脚本的回显、进度条、"Processing complete!" 都不算证据，验收只认实际产物**
 
-#### 坑 D：Vulkan 只认到 llvmpipe，4090 未被识别
+#### 问题 D：Vulkan 只认到 llvmpipe，4090 未被识别
 
 - **症状**：`vulkaninfo` 报 `Could not get 'vkCreateInstance' via 'vk_icdGetInstanceProcAddr' for ICD libGLX_nvidia.so.0`，GPU0 = llvmpipe；SAPIEN 报 `failed to find a rendering device`
 - **根因**：精简镜像缺 EGL/GLVND 运行时包（`libegl1`、`libglvnd0`）。NVIDIA 的 Vulkan ICD 在 headless 场景经 EGL/GBM 路径触达 GPU，这条路需要 EGL vendor 注册。此前逐项排查过权限/库/符号/依赖/设备节点/ICD 位置/loader 版本共七项，全对，唯独漏了"用户空间图形栈整包缺失"这一项
@@ -216,33 +217,33 @@ bash eval.sh RoboTwin stack_bowls_two Hy-VLA-RoboTwin-ckpt arx_x5 ee 0 0 0 uv Ro
 
 ### 3.2 评测阶段
 
-#### 坑 E：ckpt 静默回落——权重指错了却不报任何错
+#### 问题E：ckpt 静默回落——权重指错了却不报任何错
 
 - **症状**：`eval.sh` 正常启动、模型正常加载，但跑出来的成绩无效
 - **根因**：`setup_eval_policy_server.sh` 的 `resolve_ckpt_override()` 按优先级找权重，全落空时**不报错、不覆盖**，静默沿用 `deploy.yml` 默认的 `ckpt_path`——而默认值是 **RoboDojo 权重** `Hy-VLA-RoboDojo-v3/hyvla_dojo_ckpt_v3`。我们的权重路径不在任何候选里
 - **解法**：`export HY_VLA_CKPT_PATH=<权重绝对路径>`（优先级最高）
 - **验收信号**：日志出现 `[SERVER] ckpt override: ckpt_path=...Hy-VLA-RoboTwin-ckpt`；若出现 `ckpt_name='...' not resolved ...; using deploy.yml ckpt_path` 就是没指对
 
-#### 坑 F：`model.py:321` AssertionError（n_action_steps 与 norm_stats 不匹配）
+#### 问题 F：`model.py:321` AssertionError（n_action_steps 与 norm_stats 不匹配）
 
 - **症状**：模型加载中途 `assert effective_chunk <= val.shape[0]` 失败，server 起不来
 - **根因**：ckpt 的 `config.json` 里 `n_action_steps: 40`，但 `norm_stats.pkl` 里动作统计是 `(20, 20)`。40 = 2×20——该权重按 **rel+abs 交织**训练（40 个 token = 20 相对 + 20 绝对），而 `deploy.yml:30` 默认 `with_absolute: false`，chunk 算成 40 > 20
 - **解法**：`deploy.yml` 第 30 行 `with_absolute: false → true`（生效后日志显示 `decode mode: with_absolute=True, chunk=20`）
 - **佐证**：pkl 里同时存在相对（`action_mean`）与绝对（`action_mean_abs`）两组统计，与训练侧 `act_type: "relative_chunk_ee_RT_with_absolute"` 一致
 
-#### 坑 G：环境侧 `import cv2` 失败（libGL.so.1）
+#### 问题G：环境侧 `import cv2` 失败（libGL.so.1）
 
 - **症状**：`ImportError: libGL.so.1: cannot open shared object file`
 - **根因**：精简镜像缺 `libgl1`（cv2 需要）；与坑 D 的 `libegl1`（SAPIEN 需要）同族但不同包，别想当然认为装了一个就够
 - **解法**：`apt-get install -y libgl1`
 
-#### 坑 H：真跑卡在 ffmpeg 缺失（debug 不踩、真跑才踩）
+#### 问题 H：真跑卡在 ffmpeg 缺失（debug 不踩、真跑才踩）
 
 - **症状**：SAPIEN 场景正常渲染、连接成功，随后 `eval_policy_xpolicylab.py:849` 的 `subprocess.Popen(["ffmpeg", ...])` 报 `FileNotFoundError`
 - **根因**：镜像没装 ffmpeg 可执行文件。debug 是桩环境不录像，所以冒烟发现不了
 - **解法**：`apt-get install -y ffmpeg`（需含 libx264）；或零下载方案——软链 `imageio_ffmpeg` 自带的静态 ffmpeg（已确认含 libx264）到 `/usr/local/bin/ffmpeg`
 
-#### 坑 I：最大的坑——`deploy.yml` 是 RoboDojo 模板
+#### 问题I：最大的坑——`deploy.yml` 是 RoboDojo 模板
 
 - **症状**：权重指对、服务正常、22 集跑完 21 集，`Success rate: 0/21 => 0.0%`，每集 900 步打满。而 ckpt 自带 README 白纸黑字写着 90.9% average success rate——90.9% 的模型跑出 0/21，不可能是"策略弱"
 - **根因**：`XPolicyLab/policy/Hy_Embodied_05_VLA/deploy.yml` 是**给 RoboDojo 权重写的模板**（第 1 行注释就写着 "RoboDojo"）。用 `HY_VLA_CKPT_PATH` 换了**权重**，但整份预处理/解码**口径**还是 RoboDojo 的。与官方 `Hy-Embodied-0.5-VLA/robotwin_eval/deploy_policy.yml`（全文仅 37 行）共 **6 处差异**：
@@ -257,20 +258,20 @@ bash eval.sh RoboTwin stack_bowls_two Hy-VLA-RoboTwin-ckpt arx_x5 ee 0 0 0 uv Ro
 | 6 | `instruction_type` | **unseen**（官方脚本硬编码） | 不传 → 落到任务 yml 的 seen |
 
 - **过程中的次生坑**：改完前 4 项后崩在新断言 `img_history_interval (5) must be divisible by the chunk history span (7)`——第 5 项 `history_cadence: chunk` 是从 RoboDojo 模板带来的，官方文件里根本没有这个键。chunk 模式下 RoboDojo 的 `20 % 10 == 0` 成立，照搬到 RoboTwin 的 `5 % 7` 就炸；改 `step`（或删掉该行）即通过
-- **解法**：6 处全部对齐官方（见上表）。其中 `instruction_type` 官方链路不传，需经 `ROBOTWIN_EVAL_ARGS_FILE` 补传（见坑 J）
+- **解法**：6 处全部对齐官方（见上表）。其中 `instruction_type` 官方链路不传，需经 `ROBOTWIN_EVAL_ARGS_FILE` 补传（问题J）
 - **结果**：0/23 → **6/6 = 100%**。确诊问题在部署口径，不在模型能力
 
 > [!IMPORTANT]
 > 官方模型卡里的评测入口 `scripts/eval_robotwin_test.sh` **在仓库里不存在**（本仓库已被
 > XPolicyLab 改造），只能走 XPolicyLab 链路 + 改 `deploy.yml` 对齐官方口径。
 
-#### 坑 J：`ROBOTWIN_EVAL_ARGS_FILE` 的 mapfile 写法
+#### 问题 J：`ROBOTWIN_EVAL_ARGS_FILE` 的 mapfile 写法
 
 - **症状**：`--test_num 10` 写在一行，argparse 报 `unrecognized arguments: --test_num 10`
 - **根因**：`eval_policy.sh` 用 `mapfile -t` 读入，**每行只当一个 argv 元素**
-- **解法**：**每行一个 token**（`--test_num` ⏎ `10` ⏎ `--instruction_type` ⏎ `unseen`），见 2.3
+- **解法**：**每行一个 token**（`--test_num` ⏎ `10` ⏎ `--instruction_type` ⏎ `unseen`）
 
-#### 坑 K：`test_num` 默认 100 集（约 9 小时）
+#### 问题 K：`test_num` 默认 100 集（约 9 小时）
 
 - **根因**：XPolicyLab 链路不传 `--test_num`，源码默认 100（`eval_policy_xpolicylab.py:307`）；实测约 5.5 min/集 → 100 集 ≈ 9 小时。日志里那句 `Success rate: 0/1` 的分母是"已完成集数"，不是设定值
 - **解法**：按坑 J 用 `ROBOTWIN_EVAL_ARGS_FILE` 传 `--test_num`，先跑 10 集验证再上量
