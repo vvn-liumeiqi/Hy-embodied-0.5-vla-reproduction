@@ -5,6 +5,8 @@
 > 权重为 HF 上的 `tencent/Hy-Embodied-0.5-VLA-RoboTwin`。
 >
 > 本文重点在于成功流程和遇到的问题
+> 测试成功视频：
+> https://github.com/user-attachments/assets/a6624f07-482d-49f3-a10d-9bbc380fe9b7
 
 ---
 
